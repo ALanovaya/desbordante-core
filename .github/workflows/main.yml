@@ -38,48 +38,30 @@ jobs:
     runs-on: ${{ matrix.system.os }}
 
     steps:
-      - name: Checkout CI scripts (main)
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          path: ci
-
       - name: Checkout code under test
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.code-ref }}
-          path: src
           fetch-depth: 0
 
       - name: Debug refs
         shell: bash
         run: |
-          echo "Workflow yaml ref (button branch): ${{ github.ref }}"
-          echo "Code ref input: ${{ inputs.code-ref }}"
-          echo "CI scripts (main) HEAD:"
-          (cd ci && git log -1 --oneline)
-          echo "Code under test HEAD:"
-          (cd src && git log -1 --oneline)
+          echo "Workflow file branch (Run workflow dropdown): ${{ github.ref }}"
+          echo "Checked out code ref input: ${{ inputs.code-ref }}"
+          git log -1 --oneline
 
       - name: Install dependencies
-        uses: ./ci/.github/composite-actions/install-dependencies
+        uses: ./.github/composite-actions/install-dependencies
         with:
           os: ${{ matrix.system.os }}
           toolset: ${{ matrix.system.toolset }}
 
       - name: Download datasets
-        uses: ./ci/.github/composite-actions/download-datasets
-
-      - name: Link datasets into src (if needed)
-        shell: bash
-        run: |
-          if [[ -d "${GITHUB_WORKSPACE}/datasets" && ! -e "${GITHUB_WORKSPACE}/src/datasets" ]]; then
-            ln -s "${GITHUB_WORKSPACE}/datasets" "${GITHUB_WORKSPACE}/src/datasets"
-          fi
+        uses: ./.github/composite-actions/download-datasets
 
       - name: Build
         shell: bash
-        working-directory: src
         run: |
           export ${{ matrix.system.env }}
 
@@ -95,7 +77,7 @@ jobs:
           fi
 
       - name: Test
-        working-directory: src/build
+        working-directory: ${{ github.workspace }}/build
         shell: bash
         run: |
           export ${{ matrix.system.runtime-env }}
