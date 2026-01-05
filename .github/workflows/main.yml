@@ -1,37 +1,83 @@
-name: ubuntu-asan-debug (fork)
+name: Ubuntu CIND (Debug + ASan)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - ci-debug/**
+    inputs:
+      ref:
+        description: "Branch / tag / SHA to test (e.g. your PR branch)"
+        required: true
+        default: "main"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-test:
+  run_cind_tests:
+    name: CIND on Ubuntu (${{ matrix.system.toolset }})
     runs-on: ubuntu-latest
-    env:
-      ASAN_OPTIONS: "abort_on_error=1:symbolize=1:print_stacktrace=1"
-      UBSAN_OPTIONS: "print_stacktrace=1"
+
+    strategy:
+      fail-fast: false
+      matrix:
+        system:
+          - toolset: gcc
+            env: CXX=g++-10
+
+          - toolset: llvm-clang
+            env: CXX=clang++-20 CXXFLAGS="-stdlib=libc++" LDFLAGS="-lc++abi"
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout (ref=${{ inputs.ref }})
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
-      - name: Install deps
+      - name: Install dependencies
+        uses: ./.github/composite-actions/install-dependencies
+        with:
+          os: ubuntu-latest
+          toolset: ${{ matrix.system.toolset }}
+
+      - name: Download datasets
+        uses: ./.github/composite-actions/download-datasets
+
+      - name: Build (Debug + ASan)
+        shell: bash
         run: |
+          set -euxo pipefail
+          export ${{ matrix.system.env }}
+          ./build.sh --debug --sanitizer=ADDRESS
+
+      - name: Test (only CIND, verbose, single-thread)
+        working-directory: ${{ github.workspace }}/build
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          # чтобы ASan давал нормальные стеки
           sudo apt-get update
-          sudo apt-get install -y ninja-build cmake llvm clang
+          sudo apt-get install -y llvm
+          export ASAN_SYMBOLIZER_PATH="$(which llvm-symbolizer)"
 
-      - name: Configure (Debug + ASan)
-        run: |
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DDESBORDANTE_SANITIZER=ADDRESS
+          # максимально полезные опции ASan (можешь убрать detect_container_overflow если шумит)
+          export ASAN_OPTIONS="abort_on_error=1:symbolize=1:print_stacktrace=1:detect_container_overflow=1"
+          export UBSAN_OPTIONS="print_stacktrace=1"
 
-      - name: Build
-        run: |
-          cmake --build build -j
+          # гоняем только твой suite, без параллели и с полным выводом
+          ctest -R "CINDTestSuite" \
+            --exclude-regex ".*HeavyDatasets.*" \
+            -j1 -VV --output-on-failure
 
-      - name: Run only CIND tests (verbose, single-thread)
-        run: |
-          ctest --test-dir build -R CINDTestSuite -j1 -VV --output-on-failure
           echo "----- LastTest.log -----"
-          cat build/Testing/Temporary/LastTest.log || true
+          cat Testing/Temporary/LastTest.log || true
+
+      - name: Upload CTest logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-${{ matrix.system.toolset }}
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: ignore
