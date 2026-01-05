@@ -1,20 +1,24 @@
-name: CMake
+name: Debug
 
 on:
   workflow_dispatch:
     inputs:
+      code-ref:
+        type: string
+        default: "ci-debug/workflows"
+        description: "Git ref (branch/tag/SHA) to test"
       parallel-tests:
         type: boolean
         default: true
         description: "Run tests in parallel"
 
 concurrency:
-  group: ${{ github.workflow }}-ci-debug-workflows
+  group: ${{ github.workflow }}-${{ inputs.code-ref }}
   cancel-in-progress: true
 
 jobs:
   run_tests:
-    name: Run core-tests on ${{ matrix.system.os }} with ${{ matrix.system.toolset }}, ${{matrix.cfg.BUILD_TYPE}} ${{ matrix.cfg.SANITIZER }}
+    name: Run core-tests on ${{ matrix.system.os }} with ${{ matrix.system.toolset }}, ${{ matrix.cfg.BUILD_TYPE }} ${{ matrix.cfg.SANITIZER }}
     continue-on-error: true
     strategy:
       matrix:
@@ -27,45 +31,71 @@ jobs:
             toolset: llvm-clang
             env: CXX=clang++-20 CXXFLAGS="-stdlib=libc++" LDFLAGS="-lc++abi"
 
-          - os: macos-latest
-            toolset: apple-clang
-            env: CXX=clang++
-
         cfg:
-          - { BUILD_TYPE: Release }
-          - { BUILD_TYPE: Debug }
-          - { BUILD_TYPE: Debug, SANITIZER : ADDRESS }
-          - { BUILD_TYPE: Debug, SANITIZER : UB }
+          - { BUILD_TYPE: Debug, SANITIZER: ADDRESS }
+          - { BUILD_TYPE: Debug, SANITIZER: UB }
 
     runs-on: ${{ matrix.system.os }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout CI scripts (main)
+        uses: actions/checkout@v4
         with:
-          ref: "ci-debug/workflows"
+          ref: main
+          path: ci
+
+      - name: Checkout code under test
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.code-ref }}
+          path: src
           fetch-depth: 0
 
+      - name: Debug refs
+        shell: bash
+        run: |
+          echo "Workflow yaml ref (button branch): ${{ github.ref }}"
+          echo "Code ref input: ${{ inputs.code-ref }}"
+          echo "CI scripts (main) HEAD:"
+          (cd ci && git log -1 --oneline)
+          echo "Code under test HEAD:"
+          (cd src && git log -1 --oneline)
+
       - name: Install dependencies
-        uses: ./.github/composite-actions/install-dependencies
+        uses: ./ci/.github/composite-actions/install-dependencies
         with:
           os: ${{ matrix.system.os }}
           toolset: ${{ matrix.system.toolset }}
 
       - name: Download datasets
-        uses: ./.github/composite-actions/download-datasets
+        uses: ./ci/.github/composite-actions/download-datasets
+
+      - name: Link datasets into src (if needed)
+        shell: bash
+        run: |
+          if [[ -d "${GITHUB_WORKSPACE}/datasets" && ! -e "${GITHUB_WORKSPACE}/src/datasets" ]]; then
+            ln -s "${GITHUB_WORKSPACE}/datasets" "${GITHUB_WORKSPACE}/src/datasets"
+          fi
 
       - name: Build
         shell: bash
+        working-directory: src
         run: |
           export ${{ matrix.system.env }}
 
-          if [[ "${{matrix.cfg.BUILD_TYPE}}" == "Debug" ]]; then
-            ./build.sh --debug --sanitizer=${{ matrix.cfg.SANITIZER }}
+          if [[ "${{ matrix.cfg.BUILD_TYPE }}" == "Debug" ]]; then
+            SAN="${{ matrix.cfg.SANITIZER }}"
+            if [[ -n "$SAN" ]]; then
+              ./build.sh --debug --sanitizer="$SAN"
+            else
+              ./build.sh --debug
+            fi
           else
             ./build.sh
           fi
 
       - name: Test
-        working-directory: ${{github.workspace}}/build
+        working-directory: src/build
         shell: bash
         run: |
           export ${{ matrix.system.runtime-env }}
