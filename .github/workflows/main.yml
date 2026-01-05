@@ -43,7 +43,13 @@ jobs:
         with:
           ref: ${{ inputs.code-ref }}
           fetch-depth: 0
-
+          
+      - name: AFTER CHECKOUT
+        shell: bash
+        run: |
+          git log -1 --oneline
+          git branch --show-current || true
+          
       - name: Debug refs
         shell: bash
         run: |
@@ -56,14 +62,15 @@ jobs:
         with:
           os: ${{ matrix.system.os }}
           toolset: ${{ matrix.system.toolset }}
+          
+      - name: AFTER CHECKOUT
+        shell: bash
+        run: |
+          git log -1 --oneline
+          git branch --show-current || true
 
       - name: Download datasets
         uses: ./.github/composite-actions/download-datasets
-              
-      - name: Find nested checkouts in composite actions
-        shell: bash
-        run: |
-          grep -RIn "actions/checkout" .github/composite-actions || true
 
       - name: Assert code before build
         shell: bash
