@@ -59,6 +59,20 @@ jobs:
 
       - name: Download datasets
         uses: ./.github/composite-actions/download-datasets
+        
+      - name: Find nested checkouts in composite actions
+        shell: bash
+        run: |
+          grep -RIn "actions/checkout" .github/composite-actions || true
+
+      - name: Assert code before build
+        shell: bash
+        run: |
+          echo "BEFORE BUILD:"
+          git log -1 --oneline
+          git rev-parse --abbrev-ref HEAD || true
+          ls -la
+          ls -la tests || true
 
       - name: Build
         shell: bash
