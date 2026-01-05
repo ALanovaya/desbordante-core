@@ -1,55 +1,39 @@
-name: Ubuntu CIND (Debug + ASan)
+name: CIND ASan (Ubuntu only)
 
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Branch / tag / SHA to test (e.g. your PR branch)"
-        required: true
-        default: "main"
+      parallel-tests:
+        type: boolean
+        default: true
+        description: "Run tests in parallel"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.inputs.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  run_cind_tests:
-    name: CIND on Ubuntu (${{ matrix.system.toolset }})
+  cind_asan:
+    name: CIND tests on Ubuntu (${{ matrix.toolset }}) Debug + ASan
     runs-on: ubuntu-latest
-
     strategy:
       fail-fast: false
       matrix:
-        system:
+        include:
           - toolset: gcc
-            env: CXX=g++-10
-
-          # FIX: do not pin to clang++-20 (often absent on ubuntu-latest)
+            env: CXX=g++
           - toolset: llvm-clang
-            env: CXX=clang++ CXXFLAGS="-stdlib=libc++" LDFLAGS="-lc++abi"
+            # Не хардкодим clang++-20: на ubuntu-latest его может не быть
+            env: CXX=clang++
 
     steps:
-      - name: Checkout (ref=${{ inputs.ref }})
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies (repo action)
+      - name: Install dependencies
         uses: ./.github/composite-actions/install-dependencies
         with:
           os: ubuntu-latest
-          toolset: ${{ matrix.system.toolset }}
-
-      # FIX: ensure clang + libc++ exist when using clang toolset
-      - name: Ensure clang + libc++ are installed (Ubuntu)
-        if: matrix.system.toolset == 'llvm-clang'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y clang libc++-dev libc++abi-dev
-          which clang++
-          clang++ --version
+          toolset: ${{ matrix.toolset }}
 
       - name: Download datasets
         uses: ./.github/composite-actions/download-datasets
@@ -58,36 +42,73 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          export ${{ matrix.system.env }}
+          export ${{ matrix.env }}
+          $CXX --version
           ./build.sh --debug --sanitizer=ADDRESS
 
-      - name: Test (only CIND, verbose, single-thread)
-        working-directory: ${{ github.workspace }}/build
+      - name: Configure ASan symbolization + options
         shell: bash
         run: |
           set -euxo pipefail
 
-          # ASan symbolizer for good stack traces
-          sudo apt-get update
-          sudo apt-get install -y llvm
-          export ASAN_SYMBOLIZER_PATH="$(which llvm-symbolizer)"
+          echo "llvm-symbolizer: $(command -v llvm-symbolizer || true)"
+          if command -v llvm-symbolizer >/dev/null 2>&1; then
+            echo "ASAN_SYMBOLIZER_PATH=$(command -v llvm-symbolizer)" >> "$GITHUB_ENV"
+          fi
 
-          export ASAN_OPTIONS="abort_on_error=1:symbolize=1:print_stacktrace=1:detect_container_overflow=1"
-          export UBSAN_OPTIONS="print_stacktrace=1"
+          # Максимально полезный вывод ASan в CI
+          echo "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:symbolize=1:print_stacktrace=1:detect_leaks=1:fast_unwind_on_malloc=0:detect_container_overflow=1" >> "$GITHUB_ENV"
+          echo "LSAN_OPTIONS=verbosity=1" >> "$GITHUB_ENV"
 
-          ctest -R "CINDTestSuite" \
-            --exclude-regex ".*HeavyDatasets.*" \
-            -j1 -VV --output-on-failure
+          # Иногда локаль влияет на парсинг/сортировку
+          echo "LC_ALL=C.UTF-8" >> "$GITHUB_ENV"
+          echo "LANG=C.UTF-8" >> "$GITHUB_ENV"
 
-          echo "----- LastTest.log -----"
-          cat Testing/Temporary/LastTest.log || true
+      - name: Sanity-check that CTest sees tests
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-      - name: Upload CTest logs (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ctest-logs-${{ matrix.system.toolset }}
-          path: |
-            build/Testing/Temporary/LastTest.log
-            build/Testing/Temporary/LastTestsFailed.log
-          if-no-files-found: ignore
+          # Если вы случайно запускаете ctest не из того каталога — тут это сразу всплывёт
+          test -f build/CTestTestfile.cmake
+
+          echo "----- First lines of build/CTestTestfile.cmake -----"
+          head -n 80 build/CTestTestfile.cmake || true
+
+          echo "----- ctest -N (first 200 lines) -----"
+          ctest --test-dir build -N | head -n 200
+
+          # Гарантируем, что именно CIND-тесты зарегистрированы
+          if ! ctest --test-dir build -N | grep -q "CINDTestSuite"; then
+            echo "ERROR: CINDTestSuite tests are not registered in CTest (wrong build dir or tests not generated)."
+            exit 1
+          fi
+
+      - name: Run only CIND tests (verbose + output-on-failure)
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          if [[ "${{ inputs.parallel-tests }}" != "false" ]]; then
+            CTEST_ARGS="-j $(nproc)"
+          else
+            CTEST_ARGS=""
+          fi
+
+          # -VV и --output-on-failure нужны, чтобы увидеть *почему* упало (assert/asan/exception)
+          ctest --test-dir build \
+            -R "^CINDTestSuite/" \
+            --output-on-failure -VV \
+            $CTEST_ARGS
+
+      - name: Fallback: run gtest binary directly (if ctest fails)
+        if: failure()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ -x build/target/Desbordante_test ]]; then
+            build/target/Desbordante_test \
+              --gtest_filter='CINDTestSuite/*' \
+              --gtest_color=yes \
+              --gtest_print_time=1
+          fi
