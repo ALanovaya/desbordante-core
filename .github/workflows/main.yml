@@ -1,112 +1,82 @@
-name: CIND ASan (Ubuntu only)
+name: CMake
 
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Branch/tag/SHA to build & test"
-        required: true
-        default: "ci-debug/workflows"
       parallel-tests:
         type: boolean
         default: true
         description: "Run tests in parallel"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-ci-debug-workflows
   cancel-in-progress: true
 
 jobs:
-  cind_asan:
-    name: CIND tests on Ubuntu (${{ matrix.toolset }}) Debug + ASan
-    runs-on: ubuntu-latest
+  run_tests:
+    name: Run core-tests on ${{ matrix.system.os }} with ${{ matrix.system.toolset }}, ${{matrix.cfg.BUILD_TYPE}} ${{ matrix.cfg.SANITIZER }}
+    continue-on-error: true
     strategy:
-      fail-fast: false
       matrix:
-        include:
-          - toolset: gcc
-            env: CXX=g++
-          - toolset: llvm-clang
+        system:
+          - os: ubuntu-latest
+            toolset: gcc
+            env: CXX=g++-10
+
+          - os: ubuntu-latest
+            toolset: llvm-clang
+            env: CXX=clang++-20 CXXFLAGS="-stdlib=libc++" LDFLAGS="-lc++abi"
+
+          - os: macos-latest
+            toolset: apple-clang
             env: CXX=clang++
 
+        cfg:
+          - { BUILD_TYPE: Release }
+          - { BUILD_TYPE: Debug }
+          - { BUILD_TYPE: Debug, SANITIZER : ADDRESS }
+          - { BUILD_TYPE: Debug, SANITIZER : UB }
+
+    runs-on: ${{ matrix.system.os }}
     steps:
-      - name: Checkout code from ${{ inputs.ref }}
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: "ci-debug/workflows"
           fetch-depth: 0
 
       - name: Install dependencies
         uses: ./.github/composite-actions/install-dependencies
         with:
-          os: ubuntu-latest
-          toolset: ${{ matrix.toolset }}
+          os: ${{ matrix.system.os }}
+          toolset: ${{ matrix.system.toolset }}
 
       - name: Download datasets
         uses: ./.github/composite-actions/download-datasets
 
-      - name: Build (Debug + ASan)
+      - name: Build
         shell: bash
         run: |
-          set -euxo pipefail
-          export ${{ matrix.env }}
-          $CXX --version
-          ./build.sh --debug --sanitizer=ADDRESS
+          export ${{ matrix.system.env }}
 
-      - name: Configure ASan symbolization + options
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "llvm-symbolizer: $(command -v llvm-symbolizer || true)"
-          if command -v llvm-symbolizer >/dev/null 2>&1; then
-            echo "ASAN_SYMBOLIZER_PATH=$(command -v llvm-symbolizer)" >> "$GITHUB_ENV"
-          fi
-          echo "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:symbolize=1:print_stacktrace=1:detect_leaks=1:fast_unwind_on_malloc=0:detect_container_overflow=1" >> "$GITHUB_ENV"
-          echo "LSAN_OPTIONS=verbosity=1" >> "$GITHUB_ENV"
-          echo "LC_ALL=C.UTF-8" >> "$GITHUB_ENV"
-          echo "LANG=C.UTF-8" >> "$GITHUB_ENV"
-
-      - name: Sanity-check that CTest sees tests
-        shell: bash
-        run: |
-          set -euxo pipefail
-          test -f build/CTestTestfile.cmake
-
-          echo "----- First lines of build/CTestTestfile.cmake -----"
-          head -n 80 build/CTestTestfile.cmake || true
-
-          echo "----- ctest -N (first 200 lines) -----"
-          ctest --test-dir build -N | head -n 200
-          if ! ctest --test-dir build -N | grep -q "CINDTestSuite"; then
-            echo "ERROR: CINDTestSuite tests are not registered in CTest (wrong build dir or tests not generated)."
-            exit 1
+          if [[ "${{matrix.cfg.BUILD_TYPE}}" == "Debug" ]]; then
+            ./build.sh --debug --sanitizer=${{ matrix.cfg.SANITIZER }}
+          else
+            ./build.sh
           fi
 
-      - name: Run only CIND tests (verbose + output-on-failure)
+      - name: Test
+        working-directory: ${{github.workspace}}/build
         shell: bash
         run: |
-          set -euxo pipefail
+          export ${{ matrix.system.runtime-env }}
 
           if [[ "${{ inputs.parallel-tests }}" != "false" ]]; then
-            CTEST_ARGS="-j $(nproc)"
-          else
-            CTEST_ARGS=""
+            if command -v nproc >/dev/null 2>&1; then
+              CORES="$(nproc)"
+            else
+              CORES="$(sysctl -n hw.ncpu)"
+            fi
+            export CTEST_ARGS="-j ${CORES} --output-on-failure -V"
           fi
 
-          ctest --test-dir build \
-            -R "^CINDTestSuite/" \
-            --output-on-failure -VV \
-            $CTEST_ARGS
-
-      - name: Fallback
-        if: failure()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          if [[ -x build/target/Desbordante_test ]]; then
-            build/target/Desbordante_test \
-              --gtest_filter='CINDTestSuite/*' \
-              --gtest_color=yes \
-              --gtest_print_time=1
-          fi
+          ctest --exclude-regex ".*HeavyDatasets.*" $CTEST_ARGS
