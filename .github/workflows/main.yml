@@ -3,6 +3,10 @@ name: CIND ASan (Ubuntu only)
 on:
   workflow_dispatch:
     inputs:
+      ref:
+        description: "Branch/tag/SHA to build & test"
+        required: true
+        default: "ci-debug/workflows"
       parallel-tests:
         type: boolean
         default: true
@@ -26,7 +30,11 @@ jobs:
             env: CXX=clang++
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code from ${{ inputs.ref }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
 
       - name: Install dependencies
         uses: ./.github/composite-actions/install-dependencies
@@ -86,7 +94,6 @@ jobs:
             CTEST_ARGS=""
           fi
 
-          # -VV и --output-on-failure нужны, чтобы увидеть *почему* упало (assert/asan/exception)
           ctest --test-dir build \
             -R "^CINDTestSuite/" \
             --output-on-failure -VV \
