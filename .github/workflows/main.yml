@@ -23,7 +23,6 @@ jobs:
           - toolset: gcc
             env: CXX=g++
           - toolset: llvm-clang
-            # Не хардкодим clang++-20: на ubuntu-latest его может не быть
             env: CXX=clang++
 
     steps:
@@ -55,12 +54,8 @@ jobs:
           if command -v llvm-symbolizer >/dev/null 2>&1; then
             echo "ASAN_SYMBOLIZER_PATH=$(command -v llvm-symbolizer)" >> "$GITHUB_ENV"
           fi
-
-          # Максимально полезный вывод ASan в CI
           echo "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:symbolize=1:print_stacktrace=1:detect_leaks=1:fast_unwind_on_malloc=0:detect_container_overflow=1" >> "$GITHUB_ENV"
           echo "LSAN_OPTIONS=verbosity=1" >> "$GITHUB_ENV"
-
-          # Иногда локаль влияет на парсинг/сортировку
           echo "LC_ALL=C.UTF-8" >> "$GITHUB_ENV"
           echo "LANG=C.UTF-8" >> "$GITHUB_ENV"
 
@@ -68,8 +63,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
-          # Если вы случайно запускаете ctest не из того каталога — тут это сразу всплывёт
           test -f build/CTestTestfile.cmake
 
           echo "----- First lines of build/CTestTestfile.cmake -----"
@@ -77,8 +70,6 @@ jobs:
 
           echo "----- ctest -N (first 200 lines) -----"
           ctest --test-dir build -N | head -n 200
-
-          # Гарантируем, что именно CIND-тесты зарегистрированы
           if ! ctest --test-dir build -N | grep -q "CINDTestSuite"; then
             echo "ERROR: CINDTestSuite tests are not registered in CTest (wrong build dir or tests not generated)."
             exit 1
@@ -101,7 +92,7 @@ jobs:
             --output-on-failure -VV \
             $CTEST_ARGS
 
-      - name: Fallback: run gtest binary directly (if ctest fails)
+      - name: Fallback
         if: failure()
         shell: bash
         run: |
