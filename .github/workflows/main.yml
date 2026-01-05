@@ -24,8 +24,9 @@ jobs:
           - toolset: gcc
             env: CXX=g++-10
 
+          # FIX: do not pin to clang++-20 (often absent on ubuntu-latest)
           - toolset: llvm-clang
-            env: CXX=clang++-20 CXXFLAGS="-stdlib=libc++" LDFLAGS="-lc++abi"
+            env: CXX=clang++ CXXFLAGS="-stdlib=libc++" LDFLAGS="-lc++abi"
 
     steps:
       - name: Checkout (ref=${{ inputs.ref }})
@@ -33,11 +34,22 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Install dependencies
+      - name: Install dependencies (repo action)
         uses: ./.github/composite-actions/install-dependencies
         with:
           os: ubuntu-latest
           toolset: ${{ matrix.system.toolset }}
+
+      # FIX: ensure clang + libc++ exist when using clang toolset
+      - name: Ensure clang + libc++ are installed (Ubuntu)
+        if: matrix.system.toolset == 'llvm-clang'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang libc++-dev libc++abi-dev
+          which clang++
+          clang++ --version
 
       - name: Download datasets
         uses: ./.github/composite-actions/download-datasets
@@ -55,16 +67,14 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # чтобы ASan давал нормальные стеки
+          # ASan symbolizer for good stack traces
           sudo apt-get update
           sudo apt-get install -y llvm
           export ASAN_SYMBOLIZER_PATH="$(which llvm-symbolizer)"
 
-          # максимально полезные опции ASan (можешь убрать detect_container_overflow если шумит)
           export ASAN_OPTIONS="abort_on_error=1:symbolize=1:print_stacktrace=1:detect_container_overflow=1"
           export UBSAN_OPTIONS="print_stacktrace=1"
 
-          # гоняем только твой suite, без параллели и с полным выводом
           ctest -R "CINDTestSuite" \
             --exclude-regex ".*HeavyDatasets.*" \
             -j1 -VV --output-on-failure
