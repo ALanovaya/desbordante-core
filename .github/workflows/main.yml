@@ -113,4 +113,4 @@ jobs:
           fi
 
           ctest -N
-          ctest -R 'CINDTestSuite' -j1 -V --output-on-failure
+          ctest -R 'DynamicFDVerifierTestSuite' -j1 -V --output-on-failure
