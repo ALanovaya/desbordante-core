@@ -112,4 +112,4 @@ jobs:
             export CTEST_ARGS="-j ${CORES} --output-on-failure -V"
           fi
 
-          ctest --test-dir build -R CINDTestSuite $CTEST_ARGS
+          ctest --test-dir "$PWD/build" -R 'CINDTestSuite' $CTEST_ARGS
